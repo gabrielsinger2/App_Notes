@@ -165,29 +165,81 @@ def plot_student(eleve):
     return fig
 
 
-def compute_stats(devoir):
-    """Calcule la moyenne et le classement pour un devoir."""
-    global df
-    if not devoir or df.empty:
-        empty = pd.DataFrame(columns=["rang", "eleve", "note"])
-        return "Pas de données pour ce devoir.", empty
+#def compute_stats(devoir):
+#    """Calcule la moyenne et le classement pour un devoir."""
+#    global df
+#    if not devoir or df.empty:
+#        empty = pd.DataFrame(columns=["rang", "eleve", "note"])
+#        return "Pas de données pour ce devoir.", empty
 
+#    sub = df[df["devoir"] == devoir].copy()
+#    if sub.empty:
+#        empty = pd.DataFrame(columns=["rang", "eleve", "note"])
+#        return f"Aucune note trouvée pour le devoir « {devoir} ».", empty
+
+#    sub = sub.dropna(subset=["note", "eleve"])
+#    if sub.empty:
+#        empty = pd.DataFrame(columns=["rang", "eleve", "note"])
+#        return f"Aucune note exploitable pour le devoir « {devoir} ».", empty
+
+#    sub = sub.sort_values("note", ascending=False)
+#    sub["rang"] = range(1, len(sub) + 1)
+#    moyenne = sub["note"].mean()
+#    resume = f"Moyenne pour « {devoir} » : {moyenne:.2f} / 20 ({len(sub)} élèves)."
+#    classement = sub[["rang", "eleve", "note"]]
+#    return resume, classement
+
+def compute_stats(devoir):
+    """Calcule stats pour un devoir : moyenne, écart-type, classement, histogramme."""
+    global df
+
+    # Figure par défaut pour l'histogramme
+    fig, ax = plt.subplots()
+
+    if not devoir or df.empty:
+        stats = "Pas de données pour ce devoir."
+        ax.set_title("Aucune note à afficher")
+        ax.set_xlabel("Note")
+        ax.set_ylabel("Nombre d'élèves")
+        return stats, pd.DataFrame(), fig
+
+    # ✅ ici on filtre sur la colonne 'devoir'
     sub = df[df["devoir"] == devoir].copy()
     if sub.empty:
-        empty = pd.DataFrame(columns=["rang", "eleve", "note"])
-        return f"Aucune note trouvée pour le devoir « {devoir} ».", empty
+        stats = "Pas de données pour ce devoir."
+        ax.set_title("Aucune note à afficher")
+        ax.set_xlabel("Note")
+        ax.set_ylabel("Nombre d'élèves")
+        return stats, pd.DataFrame(), fig
 
-    sub = sub.dropna(subset=["note", "eleve"])
-    if sub.empty:
-        empty = pd.DataFrame(columns=["rang", "eleve", "note"])
-        return f"Aucune note exploitable pour le devoir « {devoir} ».", empty
+    # ✅ colonnes 'note' (minuscule)
+    n = len(sub)
+    mean = sub["note"].mean()
+    std = sub["note"].std()
+    min_v = sub["note"].min()
+    max_v = sub["note"].max()
 
-    sub = sub.sort_values("note", ascending=False)
-    sub["rang"] = range(1, len(sub) + 1)
-    moyenne = sub["note"].mean()
-    resume = f"Moyenne pour « {devoir} » : {moyenne:.2f} / 20 ({len(sub)} élèves)."
-    classement = sub[["rang", "eleve", "note"]]
-    return resume, classement
+    stats = (
+    f"Devoir : {devoir}\n"
+    f"Nombre d'élèves : {n}\n"
+    f"Moyenne : {mean:.2f}\n"
+    f"Écart-type : {std:.2f}\n"
+    f"Minimum : {min_v:.2f}\n"
+    f"Maximum : {max_v:.2f}")
+
+
+    # ✅ classement : colonnes 'eleve' et 'note'
+    classement = sub[["eleve", "note"]].copy()
+    classement = classement.sort_values("note", ascending=False).reset_index(drop=True)
+    classement.index += 1  # classement commence à 1
+
+    # ✅ histogramme sur 'note'
+    ax.hist(sub["note"], bins=10, range=(0, 20), edgecolor="black")
+    ax.set_title(f"Répartition des notes - {devoir}")
+    ax.set_xlabel("Note")
+    ax.set_ylabel("Nombre d'élèves")
+
+    return stats, classement, fig
 
 
 def import_csv(file_obj):
@@ -327,7 +379,9 @@ with gr.Blocks(title="Suivi des notes") as demo:
             label="Classement sur ce devoir",
             interactive=False,
         )
-
+        hist_plot = gr.Plot(
+        label="Répartition des notes (histogramme)",
+    )
     # ---------- Onglet 4 : Données ----------
     with gr.Tab("Données (import / export)"):
         gr.Markdown(
@@ -361,12 +415,11 @@ with gr.Blocks(title="Suivi des notes") as demo:
         outputs=line_plot,
     )
 
-    devoir_dropdown.change(
-        fn=compute_stats,
-        inputs=devoir_dropdown,
-        outputs=[stats_text, classement_table],
+    devoir_dropdown.change(fn=compute_stats,
+    inputs=devoir_dropdown,
+    outputs=[stats_text, classement_table, hist_plot],
     )
-
+    
     import_button.click(
         fn=import_csv,
         inputs=csv_upload,
