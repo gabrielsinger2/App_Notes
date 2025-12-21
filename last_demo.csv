@@ -1,0 +1,16 @@
+eleve,date,matiere,devoir,note,commentaire
+Alice,2025-09-10,Français,Dictée 1,18,Excellent début d'année !
+Alice,2025-10-05,Français,Lecture,16,Très bonne compréhension.
+Alice,2025-09-15,Mathématiques,Calcul,14,Bien maîtrisé.
+Alice,2025-10-20,Mathématiques,Géométrie,19,Parfait !
+Bob,2025-09-10,Français,Dictée 1,8,Il faut revoir les bases de conjugaison.
+Bob,2025-10-05,Français,Lecture,11,Un peu juste mais en progrès.
+Bob,2025-09-15,Mathématiques,Calcul,Absent,Élève malade.
+Bob,2025-10-20,Mathématiques,Géométrie,9,Attention au soin des tracés.
+Charlie,2025-09-10,Français,Dictée 1,12,Travail sérieux.
+Charlie,2025-10-05,Français,Lecture,10,Attention aux étourderies.
+Charlie,2025-09-15,Mathématiques,Calcul,11,Le contrat est rempli.
+Charlie,2025-10-20,Mathématiques,Géométrie,15,Très belle progression en maths.
+Zoé,2025-09-10,Français,Dictée 1,19,Exceptionnel.
+Zoé,2025-10-20,Mathématiques,Géométrie,13,Bon travail d'ensemble.
+Zoé,2025-11-02,Sport,Endurance,18,Très endurante !
