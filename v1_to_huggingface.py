@@ -18,6 +18,16 @@ HF_TOKEN = os.getenv("HF_TOKEN")
 
 api = HfApi()
 
+
+def format_df_french(dataframe):
+    """Retourne une copie du tableau avec les dates au format français."""
+    if dataframe.empty:
+        return dataframe
+    df_display = dataframe.copy()
+    # On transforme la colonne date pour l'affichage
+    df_display['date'] = pd.to_datetime(df_display['date']).dt.strftime('%d/%m/%Y')
+    return df_display
+
 def generate_templates():
     """Génère des fichiers modèles CSV et Excel pour l'utilisateur."""
     df_template = pd.DataFrame(columns=["eleve", "date", "matiere", "devoir", "note", "coeff","commentaire"])
@@ -57,10 +67,10 @@ def import_external_file(file):
         save_data(df)
         
         noms_tries = sorted(df["eleve"].unique().tolist())
-        return f"✅ Import réussi ! {len(new_data)} notes ajoutées.", gr.update(choices=noms_tries), df
+        return f"✅ Import réussi ! {len(new_data)} notes ajoutées.", gr.update(choices=noms_tries), format_df_french(df)
         
     except Exception as e:
-        return f"❌ Erreur lors de la lecture : {str(e)}", gr.update(), df
+        return f"❌ Erreur lors de la lecture : {str(e)}", gr.update(), format_df_french(df)
 
 
 def load_data():
@@ -90,36 +100,57 @@ def generate_student_summary(eleve):
     global df
     if not eleve or df.empty: return "### Sélectionnez un élève."
     
-    # On filtre et on convertit en numérique
-    sub = df[df["eleve"] == eleve].copy()
-    # Conversion numérique de la note ET du coefficient
-    sub["note_num"] = pd.to_numeric(sub["note"], errors='coerce')
-    sub["coeff_num"] = pd.to_numeric(sub.get("coeff", 1), errors='coerce').fillna(1) # Par défaut coeff 1 si vide
+    # On prépare les données globales de l'élève
+    sub_all = df[df["eleve"] == eleve].copy()
+    sub_all["note_num"] = pd.to_numeric(sub_all["note"], errors='coerce')
+    sub_all = sub_all.dropna(subset=["note_num"])
     
-    sub = sub.dropna(subset=["note_num"])
+    if sub_all.empty: return "### Aucune donnée numérique pour cet élève."
     
-    if sub.empty: return "### Aucune donnée numérique."
-    
-    # CALCUL DE LA MOYENNE PONDÉRÉE
-    # Somme de (Notes * Coeffs) / Somme des Coeffs
-    total_points = (sub["note_num"] * sub["coeff_num"]).sum()
-    total_coeffs = sub["coeff_num"].sum()
-    avg_gen = total_points / total_coeffs
-    # On trouve la meilleure et la moins bonne matière
-    matiere_stats = sub.groupby("matiere")["note_num"].mean()
-    best_mat = matiere_stats.idxmax()
-    worst_mat = matiere_stats.idxmin()
-    
-    summary = f"""
-    ## 📋 Profil Conseil de Classe : {eleve}
-    * **Moyenne Générale** : {avg_gen:.2f}/20
-    * **Point fort** : {best_mat} ({matiere_stats.max():.2f})
-    * **Point à surveiller** : {worst_mat} ({matiere_stats.min():.2f})
-    
-    **Tendance** : {"📈 En progression" if len(sub) > 1 and sub.iloc[-1]["note_num"] >= sub.iloc[-2]["note_num"] else "📉 Attention au relâchement"}
-    """
-    return summary
+    subjects = sorted(sub_all["matiere"].unique())
+    summary = f"# 📋 Bilan Pédagogique : {eleve}\n"
+    summary += f"*Généré le {datetime.now().strftime('%d/%m/%Y')}*\n\n---\n"
 
+    for mat in subjects:
+        sub_mat = sub_all[sub_all["matiere"] == mat].sort_values("date")
+        
+        if len(sub_mat) < 2:
+            summary += f"### 📚 {mat}\n* Recul insuffisant (une seule évaluation).\n\n"
+            continue
+
+        # --- CALCUL DE LA PENTE (Régression Linéaire) ---
+        # On convertit les dates en nombre de jours depuis la 1ère note
+        dates_dt = pd.to_datetime(sub_mat['date'])
+        x = (dates_dt - dates_dt.min()).dt.days
+        y = sub_mat['note_num']
+        
+        # Pente (slope) = points gagnés ou perdus par jour
+        slope, intercept = np.polyfit(x, y, 1)
+        
+        # On calcule l'évolution sur un mois (30 jours) pour que ce soit parlant
+        pente_mensuelle = slope * 30
+        
+        # Dates de la période
+        start_p = dates_dt.min().strftime('%d/%m/%y')
+        end_p = dates_dt.max().strftime('%d/%m/%y')
+
+        # --- RÉDACTION DU COMMENTAIRE AUTOMATIQUE ---
+        if slope > 0.01:
+            statut = f"📈 **Progression constante**"
+            conseil = f"Une dynamique très positive avec une hausse moyenne de **{pente_mensuelle:.1f} pts/mois**."
+        elif slope < -0.01:
+            statut = f"⚠️ **Attention au relâchement**"
+            conseil = f"Vigilance nécessaire : on observe une baisse tendancielle de **{abs(pente_mensuelle):.1f} pts/mois**."
+        else:
+            statut = f"📊 **Résultats stables**"
+            conseil = "Le niveau de maîtrise reste constant sur la période."
+
+        summary += f"### 📚 {mat}\n"
+        summary += f"* **Période** : du {start_p} au {end_p}\n"
+        summary += f"* **Tendance** : {statut}\n"
+        summary += f"* **Analyse** : {conseil}\n\n"
+
+    return summary
 
 def get_comment_bank(eleve):
     """Retourne une banque de segments personnalisés avec le nom de l'élève."""
@@ -277,61 +308,60 @@ def compute_stats(matiere, devoir):
     global df
     fig, ax = plt.subplots(figsize=(10, 6))
     
-    # Sécurité : Si les données sont vides
     if not matiere or not devoir or df.empty: 
-        return "Sélectionnez une matière et un devoir.", pd.DataFrame(), fig, None, "### Moyenne de la matière : --/20"
+        return "Sélectionnez une matière et un devoir.", pd.DataFrame(), fig, None, "### Moyenne : --"
     
-    # 1. Moyenne de la MATIÈRE (tous devoirs confondus)
-    df_mat = df[(df["matiere"] == matiere) & (df["note"] != "Absent")].copy()
-    df_mat["note"] = pd.to_numeric(df_mat["note"], errors='coerce')
-    moy_matiere = df_mat["note"].mean()
-
-    # 2. Stats du DEVOIR spécifique
+    # 1. Préparation des données numériques
     sub = df[(df["matiere"] == matiere) & (df["devoir"] == devoir)].copy()
+    sub["note_num"] = pd.to_numeric(sub["note"], errors='coerce')
+    sub_n = sub.dropna(subset=["note_num"])
+    notes = sub_n["note_num"]
     
-    # On isole les notes numériques pour les calculs et le graphique
-    sub_n = sub[sub["note"] != "Absent"].copy()
-    sub_n["note"] = pd.to_numeric(sub_n["note"], errors='coerce').dropna()
-    
-    if sub_n.empty: 
-        # Gestion du cas où il n'y a que des absents ou aucune note
-        moy_mat_val = moy_matiere if not np.isnan(moy_matiere) else 0
-        return "Aucune note numérique pour ce devoir.", pd.DataFrame(), fig, None, f"### Moyenne de la matière ({matiere}) : {moy_mat_val:.2f}/20"
+    if notes.empty: 
+        return "Aucune note numérique.", pd.DataFrame(), fig, None, "### Moyenne : --"
 
-    moy_devoir = sub_n['note'].mean()
-    nb_absents = len(sub) - len(sub_n)
-    
-    stats_txt = (f"📊 {matiere} - {devoir}\n"
-                 f"Moyenne de ce devoir : {moy_devoir:.2f}/20\n"
-                 f"Nombre de copies : {len(sub_n)}\n"
-                 f"Nombre d'absents : {nb_absents}")
-    
-    # --- Graphique (Histogramme) ---
-    ax.hist(sub_n["note"], bins=np.arange(0, 22)-0.5, color="#4A90E2", edgecolor="white", rwidth=0.8)
+    # 2. CALCULS STATISTIQUES
+    moyenne = notes.mean()
+    mediane = notes.median()
+    q1 = notes.quantile(0.25)
+    q3 = notes.quantile(0.75)
+
+    # 3. IDENTIFICATION DES ÉLÈVES PAR QUANTILES
+    # Élèves <= Q1 (Groupe de soutien)
+    eleves_q1 = sub_n[sub_n["note_num"] <= q1]["eleve"].tolist()
+    # Élèves >= Q3 (Groupe d'excellence)
+    eleves_q3 = sub_n[sub_n["note_num"] >= q3]["eleve"].tolist()
+
+    # Formattage des listes pour l'affichage
+    txt_q1 = ", ".join(eleves_q1) if eleves_q1 else "Aucun"
+    txt_q3 = ", ".join(eleves_q3) if eleves_q3 else "Aucun"
+
+    stats_txt = (f"📊 BILAN : {matiere} - {devoir}\n"
+                 f"---------------------------------\n"
+                 f"Moyenne : {moyenne:.2f} | Médiane : {mediane:.2f}\n"
+                 f"---------------------------------\n"
+                 f"🚩 GROUPE DE SOUTIEN (≤ {q1:.1f}/20) :\n"
+                 f"{txt_q1}\n\n"
+                 f"🌟 GROUPE D'EXCELLENCE (≥ {q3:.1f}/20) :\n"
+                 f"{txt_q3}\n"
+                 f"---------------------------------\n"
+                 f"Copies : {len(notes)} | Absents : {len(sub) - len(notes)}")
+
+    # 4. GRAPHIQUE (Histogramme)
+    ax.hist(notes, bins=np.arange(0, 22)-0.5, color="#4A90E2", edgecolor="white", alpha=0.7)
+    ax.axvline(moyenne, color='red', linestyle='--', label=f'Moyenne')
+    ax.axvline(mediane, color='green', linestyle='-', label=f'Médiane')
     ax.set_xticks(range(21))
-    ax.yaxis.get_major_locator().set_params(integer=True)
-    ax.grid(True, axis='both', linestyle='--', alpha=0.5)
-    ax.set_title("Distribution des notes", fontsize=14, fontweight='bold', pad=15)
-    ax.set_xlabel("Note", fontsize=10)
-    ax.set_ylabel("Nombre d'élèves", fontsize=10)
-    fig.tight_layout()
-
-    # --- CLASSEMENT (La correction est ici) ---
+    ax.legend()
+    
+    # 5. CLASSEMENT
     sub_pour_tri = sub.copy()
-    # On crée une colonne de tri : les notes deviennent des nombres, 'Absent' devient -1
-    sub_pour_tri["note_tri"] = pd.to_numeric(sub_pour_tri["note"], errors='coerce').fillna(-1)
-    
-    # On trie par cette colonne technique (décroissant), puis on la supprime
+    sub_pour_tri["note_tri"] = sub_pour_tri["note_num"].fillna(-1)
     classement = (sub_pour_tri.sort_values("note_tri", ascending=False)
-                  .drop(columns=["note_tri"])[["eleve", "note", "commentaire"]])
+                  .drop(columns=["note_tri", "note_num"])[["eleve", "note", "commentaire"]])
     
-    # 3. Moyenne globale en Markdown
-    moy_mat_display = moy_matiere if not np.isnan(moy_matiere) else 0
-    moy_globale_md = f"## 🏆 Moyenne Générale en {matiere} : {moy_mat_display:.2f}/20"
+    return stats_txt, classement, fig, save_plot_to_file(fig), f"## 🏆 Moyenne de Classe : {moyenne:.2f}/20"
     
-    return stats_txt, classement, fig, save_plot_to_file(fig), moy_globale_md
-# --- FONCTION DÉMO ---
-
 def run_full_demo():
     global df
     # Liste de 40 élèves avec des homonymes (ex: 2 Alice, 2 Bob, 2 Thomas)
@@ -373,9 +403,11 @@ def run_full_demo():
                     note_str = str(note_val)
                     comm = "Travail régulier."
                 
-                data.append([nom, date_devoir, matiere, devoir_nom, note_str, comm])
-    
-    df = pd.DataFrame(data, columns=["eleve", "date", "matiere", "devoir", "note", "commentaire"])
+                #data.append([nom, date_devoir, matiere, devoir_nom, note_str, comm])
+                data.append([nom, date_devoir, matiere, devoir_nom, note_str, 1, comm]) # Ajout du 1 ici
+
+    df = pd.DataFrame(data, columns=["eleve", "date", "matiere", "devoir", "note", "coeff", "commentaire"]) # Ajout de "coeff"  
+    #df = pd.DataFrame(data, columns=["eleve", "date", "matiere", "devoir", "note", "commentaire"])
     save_data(df)
     noms_tries = sorted(eleves)
     return (
@@ -383,8 +415,7 @@ def run_full_demo():
         gr.update(choices=noms_tries), # Les noms seront triés par ordre alphabétique
         gr.update(choices=noms_tries), # POUR eleve_in (Saisie) 
         gr.update(choices=matieres),
-        df
-    )    
+        format_df_french(df) )    
 def reset_to_empty():
     global df
     # On crée un tableau vide avec les bonnes colonnes
@@ -394,7 +425,7 @@ def reset_to_empty():
         "🗑️ Carnet réinitialisé ! Vous pouvez recommencer à zéro.",
         gr.update(choices=[], value=None), # Vide le menu Élève
         gr.update(choices=[], value=None), # Vide le menu Matière
-        df                                # Vide le tableau d'historique
+        format_df_french(df)                                # Vide le tableau d'historique
     )
     
 def add_grade(eleve, matiere, devoir, note, date_input, coeff, commentaire):
@@ -415,34 +446,28 @@ def add_grade(eleve, matiere, devoir, note, date_input, coeff, commentaire):
     # ON RENVOIE 7 VALEURS
     # 1: status, 2: menu_eleve, 3: df_pour_saisie, 4: fig, 5: synthese, 6: table_indiv, 7: df_live
     #return "✅ Note enregistrée !", gr.update(choices=get_choices("eleve")), df, fig, msg, table, df
-    return "✅ Note enregistrée !", gr.update(choices=get_choices("eleve")), table, fig, msg, table, df
+    #return "✅ Note enregistrée !", gr.update(choices=get_choices("eleve")), table, fig, msg, table, df
+    # Change la fin du return pour utiliser format_df_french(df)
+    return "✅ Note enregistrée !", gr.update(choices=get_choices("eleve")), format_df_french(df), fig, msg, table, format_df_french(df)
 # --- INTERFACE ---
-
-with gr.Blocks(theme=gr.themes.Soft(), title="Assistant Notes CP") as demo:
+with gr.Blocks(theme=gr.themes.Default(), title="Assistant Notes CP") as demo:
     gr.Markdown("#Bonjour :) ")
 
     with gr.Tab("📖 Guide & Aide"):
         gr.Markdown("""
-        ## Bienvenue sur votre application 
-        Cet outil est conçu pour vous donner automatiquement une vue d'ensemble, détecter les élèves en progrès et ceux en difficulité ainsi et simplifier la gestion de vos évaluations et la rédaction des appréciations.
+        # L'Assistant Notes : Votre partenaire pédagogique au quotidien
         
-        **Fonctionnalités clés**
-        * **Saisie rapide** : Enregistrez les notes et générez des commentaires en un clic.
-        * **Analyse de progression** : Le bouton **Inspirer** propose des commentaires pour vous insipirer. Ces commentaires prennent en compte la différence entre la note actuelle et la précédente pour valoriser les progrès ou encourager en cas de baisse.
-        * **Suivi Individuel** : Visualisez la courbe de progression de chaque élève par matière.
-        * **Statistiques de classe** : Analysez la répartition des notes (histogramme) et les moyennes générales, le nombre d'absents.
+        **Libérez-vous du temps pour l'essentiel en automatisant vos bilans, tout en portant un regard précis sur la réussite de chaque élève. Visualisez instantanément la progression individuelle au fil de chaque évaluation, identifiez les trajectoires de progrès ou les besoins de soutien, et laissez l'Assistant Notes simplifier vos appréciations pour des livrets plus humains et sans effort.**
         
-        Vous pouvez importer vos propres listes d'élèves ou vos notes existantes.
-        * **Téléchargement** : Allez dans l'onglet **'Modèles & Import'** pour récupérer un fichier vierge prêt à l'emploi.
-        * **Format attendu** : Pour que l'importation fonctionne, votre fichier doit impérativement contenir ces **6 colonnes** (en minuscules) :
-            1.  `eleve` : Nom et Prénom de l'élève.
-            2.  `date` : Format AAAA-MM-JJ (ex: 2025-01-20) ou cliquer sur le symbole calendrier juste à coté.
-            3.  `matiere` : Français, Mathématiques, etc.
-            4.  `devoir` : Nom de l'évaluation (ex: Dictée 1).
-            5.  `note` : Un chiffre entre 0 et 20, ou le mot **Absent**.
-            6.  `commentaire` : Votre appréciation (peut être vide au départ).
-            
-        > **Astuce** : Utilisez le **Mode Démo** dans l'onglet Configuration pour explorer l'application avec des données fictives avant de commencer !
+        ---
+        ### Vos outils clés
+        ⭐ **Suivi Dynamique** : Visualisez l'évolution de chaque élève, évaluation après évaluation (DS), grâce à des graphiques de progression chronologiques par matière.
+        
+        ⭐ **Aide à la Rédaction** : Générez des commentaires personnalisés qui analysent automatiquement l'écart entre le dernier DS et le précédent ($\Delta$).
+        
+        ⭐ **Saisie Intuitive** : Enregistrez vos notes, dates et coefficients en un clic avec un registre live pour ne jamais perdre le fil de vos saisies.
+        
+        ⭐ **Analyse "Conseil de Classe"** : Obtenez une synthèse automatique des points forts et des points de vigilance pour chaque profil d'élève.
         """)
     
     with gr.Tab("📝 Saisie"):
@@ -464,7 +489,7 @@ with gr.Blocks(theme=gr.themes.Soft(), title="Assistant Notes CP") as demo:
         status_msg = gr.Markdown()
         # AJOUT ICI (Le Product Designer valide !)
         gr.Markdown("### 📜 Registre des dernières saisies")
-        full_table_display = gr.Dataframe(value=df, label="Carnet de notes complet")
+        full_table_display = gr.Dataframe(value=format_df_french(df), label="Carnet de notes complet")
 
         
 
@@ -475,8 +500,8 @@ with gr.Blocks(theme=gr.themes.Soft(), title="Assistant Notes CP") as demo:
         
         with gr.Row():
             # On ajoute la synthèse ici
-            with gr.Column(scale=1):
-                summary_out = gr.Markdown("### Synthèse Conseil de Classe")
+            with gr.Column(scale=2):
+                summary_out = gr.Markdown("### Bilan", container=True)
             with gr.Column(scale=2):
                 plot_out = gr.Plot()
                 
@@ -490,7 +515,8 @@ with gr.Blocks(theme=gr.themes.Soft(), title="Assistant Notes CP") as demo:
             mat_st = gr.Dropdown(label="Matière", choices=["Français", "Mathématiques"])
             dev_st = gr.Dropdown(label="Devoir")
         with gr.Row():
-            stats_out = gr.Textbox(label="Bilan rapide", lines=5)
+            #stats_out = gr.Textbox(label="Bilan rapide", lines=5)
+            stats_out = gr.Textbox(label="Analyse des groupes de niveau", lines=10)
             hist_out = gr.Plot()
             dl_class = gr.File(label="Télécharger Histogramme")
         rank_table = gr.Dataframe(label="Classement de la classe")
